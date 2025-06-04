@@ -1,14 +1,16 @@
+#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <getopt.h>
+#include <unistd.h>
 #include <mpi.h>
+#include <time.h>
 
 /* problem parameters */
-#define c 0.1          /* diffusion coefficient */
-#define N 100       /* number of interior points per dimension */
+float c = 0.1f;          /* diffusion coefficient */
+int N = 100;       /* number of interior points per dimension */
 #define max_steps 10000 /* number of time iterations */
-#define delta_s 1.0 / (N + 1)
-#define delta_t (delta_s * delta_s) / (4.0 * c)
 
 /* boundary temperatures */
 float alpha0(float y) { return 10.0; }  /* u(t,0,y) */
@@ -31,7 +33,7 @@ float initial(float x, float y) {
     return 0.0;
 }
 
-void LocalDerivative(float *u_new, float *u, int Nc, float *u_down, float *u_up, int Rank){
+void LocalDerivative(float *u_new, float *u, int Nc, float *u_down, float *u_up, int Rank, float delta_s, float delta_t) {
     for (int i = 0; i < Nc; i++){
         for (int j = 0; j < N; j++){
             float uij = u[i*N + j];
@@ -45,7 +47,7 @@ void LocalDerivative(float *u_new, float *u, int Nc, float *u_down, float *u_up,
     }
 }
 
-void InputData(float *u){
+void InputData(float *u, float delta_s) {
     for (int i = 0; i < N; i++){
         for (int j = 0; j < N; j++){
             u[i*N + j] = initial((i+1) * delta_s, (j+1) * delta_s);
@@ -54,6 +56,33 @@ void InputData(float *u){
 }
 
 int main(int argc, char** argv) {
+    int opt;
+    static struct option long_options[] = {
+        {"number-interior-points", required_argument, 0, 'n'},
+        {"diffusion-coefficient", required_argument, 0, 'c'},
+        {0, 0, 0, 0}
+    };
+
+    while ((opt = getopt_long(argc, argv, "n:c:", long_options, NULL)) != -1) {
+        switch (opt) {
+            case 'n':
+                N = atoi(optarg);
+                break;
+            case 'c':
+                c = atof(optarg);
+                break;
+            default:
+                fprintf(stderr, "Usage: %s [--number-interior-points N] [--diffusion-coefficient c]\n", argv[0]);
+                exit(EXIT_FAILURE);
+        }
+    }
+
+    double delta_s = 1.0 / (N + 1);
+    double delta_t = 0.5 * (delta_s * delta_s) / (4.0 * c);
+
+    /* Start timing */
+    struct timespec start_time, end_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
 
     int NP, Rank;
     MPI_Init(&argc, &argv);
@@ -65,7 +94,7 @@ int main(int argc, char** argv) {
     float *u_old = malloc(N * N * sizeof(float));
     float *u_new = malloc(N * N * sizeof(float));
 
-    if (Rank == 0) InputData(u_old);
+    if (Rank == 0) InputData(u_old, delta_s);
 
     // domain decomposition
     int Nc;
@@ -114,7 +143,7 @@ int main(int argc, char** argv) {
             MPI_Sendrecv(u_old_c, N, MPI_FLOAT, Rank - 1, Rank + 100, u_down, N, MPI_FLOAT, Rank + 1, Rank + 1 + 100, MPI_COMM_WORLD, &Stat);
         }
 
-        LocalDerivative(u_new_c, u_old_c, Nc, u_down, u_up, Rank);
+        LocalDerivative(u_new_c, u_old_c, Nc, u_down, u_up, Rank, delta_s, delta_t);
 
         for (int i = 0; i < Nc; i++){
             for (int j = 0; j < N; j++){
@@ -126,10 +155,20 @@ int main(int argc, char** argv) {
     MPI_Gather(u_new_c, N * Nc, MPI_FLOAT, u_new, N * Nc, MPI_FLOAT, 0, MPI_COMM_WORLD);
 
     /* output final temperature field to stdout */
-    if (Rank == 0){
+    if (Rank == 0){           
+        /* End timing */
+        clock_gettime(CLOCK_MONOTONIC, &end_time);
+        double elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
+                            (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
+        /* Display configuration and timing */
+        printf("Simulation completed.\n");
+        printf("Number of interior points (N): %d\n", N);
+        printf("Diffusion coefficient (c): %.6f\n", c);
+        printf("Total execution time: %.6f seconds\n", elapsed_time);
         printf("Number of iterations: %d\n", max_steps);
-        DisplayArray(u_new, N, N);
+        // DisplayArray(u_new, N, N);
     }
     MPI_Finalize();
+
     return 0;
 }
