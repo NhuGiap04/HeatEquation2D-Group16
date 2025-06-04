@@ -11,3 +11,4 @@ wheels/
 
 heat_output.txt
 output
+*.exe
