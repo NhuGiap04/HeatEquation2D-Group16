@@ -129,6 +129,14 @@ int main(int argc, char **argv) {
                           (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
 
     /* Close the file and free memory */
+    // display u_new
+    printf("Final temperature distribution:\n");
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            printf("%.6f ", u_new[i * N + j]);
+        }
+    printf("\n");
+}
     fclose(fp);
     free(u_old);
     free(u_new);

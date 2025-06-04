@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 199309L
+//#define _POSIX_C_SOURCE 199309L
 #include <stdlib.h>
 #include <math.h>
 #include <getopt.h>
@@ -8,7 +8,7 @@
 #include <cuda.h>
 #include <float.h>
 int N = 100;  /* mesh size = M = n  */
-float c = 0.1; /* diffusion coefficient */
+#define c 0.1 /* diffusion coefficient */
 #define  max_steps   10000  /* number of time iterations */
 /* choose Δt ≤ (Δs)^2/(2c) for stability; here a bit more conservative */
 // #define  delta_s      1.0 / (N + 1)
@@ -21,18 +21,18 @@ float c = 0.1; /* diffusion coefficient */
 // #define ThreadSizeY (N - 1)/(GridSizeY*BlockSizeY) + 1
 
 /* boundary temperatures */
-__device__ float alpha0(float y) { return 10.0; }  /* u(t,0,y) */
-__device__ float alpha1(float y) { return 40.0; }  /* u(t,1,y) */
-__device__ float beta0(float x)  { return 30.0; }  /* u(t,x,0) */
-__device__ float beta1(float x)  { return 50.0; }  /* u(t,x,1) */
+__device__ double alpha0(double y) { return 0.0; }  /* u(t,0,y) */
+__device__ double alpha1(double y) {  return sqrt(y / 4); }  /* u(t,1,y) */
+__device__ double beta0(double x)  { return 100 * (0.7 + 0.3 * sin(5 * 3.14 * x / 4)); }  /* u(t,x,0) */
+__device__ double beta1(double x)  { return 100 * cbrt(x / 4); }  /* u(t,x,1) */
 
 /* initial interior temperature */
-float Initial(float x, float y)
+double Initial(double x, double y)
 {
     return 0.0;
 }
 
-void InputData(float *U, float delta_s)
+void InputData(double *U, double delta_s)
 {
     int i, j;
     for (i=0; i<N; i++)
@@ -45,7 +45,7 @@ void InputData(float *U, float delta_s)
 }
 
 //=========================
-__global__ void Derivative(float *U, float *dU, float delta_s){
+__global__ void Derivative(double *U, double *dU, double delta_s, int N){
     // T = array N x N
     // dT = array N x N
     int i, j;
@@ -54,19 +54,19 @@ __global__ void Derivative(float *U, float *dU, float delta_s){
 
     if ((i < N) && (j < N))
     {
-        float uij = *(U+i*N+j);
-        float down = (i==N-1) ? alpha1((j+1) * delta_s) : *(U + (i+1)*N+ j);
-        float up = (i==0) ? alpha0((j+1) * delta_s) : *(U + (i-1)*N + j);
-        float left = (j==0) ? beta0((i+1) * delta_s) : *(U + i*N + (j-1));
-        float right = (j==N-1) ? beta1((i+1) * delta_s) : *(U + i*N + (j+1));
-        float laplace = right + left + up + down - 4.0 * uij;
+        double uij = *(U+i*N+j);
+        double down = (i==N-1) ? alpha1((j+1) * delta_s) : *(U + (i+1)*N+ j);
+        double up = (i==0) ? alpha0((j+1) * delta_s) : *(U + (i-1)*N + j);
+        double left = (j==0) ? beta0((i+1) * delta_s) : *(U + i*N + (j-1));
+        double right = (j==N-1) ? beta1((i+1) * delta_s) : *(U + i*N + (j+1));
+        double laplace = right + left + up + down - 4.0 * uij;
 
         *(dU+i*N+j) = laplace; 
     }
 }
 
 
-__global__ void SolvingODE(float *U,float *dU, float delta_s, float delta_t) 
+__global__ void SolvingODE(double *U,double *dU, double delta_s, double delta_t, int N) 
 {
 
     int i, j;
@@ -92,9 +92,6 @@ int main(int argc, char *argv[]) {
             case 'n':
                 N = atoi(optarg);
                 break;
-            case 'c':
-                c = atof(optarg);
-                break;
             default:
                 fprintf(stderr, "Usage: %s [--number-interior-points N] [--diffusion-coefficient c]\n", argv[0]);
                 exit(EXIT_FAILURE);
@@ -111,31 +108,38 @@ int main(int argc, char *argv[]) {
     clock_gettime(CLOCK_MONOTONIC, &start_time);
 
     int i, j, t;
-    float *Ucpu, *dUcpu;
-    Ucpu  = (float *)malloc((N * N)*sizeof(float));
-    dUcpu = (float *)malloc((N * N)*sizeof(float));
+    double *Ucpu, *dUcpu;
+    Ucpu  = (double *)malloc((N * N)*sizeof(double));
+    dUcpu = (double *)malloc((N * N)*sizeof(double));
     InputData(Ucpu, delta_s);
     // CUDA code
     //1. Delare and Allocate Mem on GPU
-    float *Ugpu,*dUgpu;
-    cudaMalloc((void**)&Ugpu ,(N * N)*sizeof(float));
-    cudaMalloc((void**)&dUgpu,(N * N)*sizeof(float));
+    int *Ngpu;
+    double *Ugpu,*dUgpu,*delta_sgpu, *delta_tgpu;
+    cudaMalloc((void**)&Ugpu ,(N * N)*sizeof(double));
+    cudaMalloc((void**)&dUgpu,(N * N)*sizeof(double));
+    cudaMalloc((void**)&Ngpu, sizeof(int));
+    cudaMalloc((void**)&delta_sgpu, sizeof(double));
+    cudaMalloc((void**)&delta_tgpu, sizeof(double));
 
     //2. Copy Input from CPU to GPU
-    cudaMemcpy(Ugpu, Ucpu,(N * N)*sizeof(float),cudaMemcpyHostToDevice);
+    cudaMemcpy(Ugpu, Ucpu,(N * N)*sizeof(double),cudaMemcpyHostToDevice);
+    cudaMemcpy(Ngpu, &N, sizeof(int),cudaMemcpyHostToDevice);
+    cudaMemcpy(delta_sgpu, &delta_s, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(delta_tgpu, &delta_t, sizeof(double), cudaMemcpyHostToDevice);
 
     //3. Define Block and Thread Structure
     dim3 dimGrid(GridSizeX,GridSizeY);
     dim3 dimBlock(BlockSizeX,BlockSizeY);
 
     for (t=0; t<max_steps; t++) {
-        Derivative<<<dimGrid,dimBlock>>>(Ugpu,dUgpu, delta_s);
-        SolvingODE<<<dimGrid,dimBlock>>>(Ugpu,dUgpu, delta_s, delta_t);
+        Derivative<<<dimGrid,dimBlock>>>(Ugpu, dUgpu, (double)delta_s, N);
+        SolvingODE<<<dimGrid,dimBlock>>>(Ugpu, dUgpu, (double)delta_s, (double)delta_t, N);
         cudaDeviceSynchronize();
     }
 
     //5. Copy Output from GPU to CPU
-    cudaMemcpy(Ucpu, Ugpu, (N * N)*sizeof(float),cudaMemcpyDeviceToHost);
+    cudaMemcpy(Ucpu, Ugpu, (N * N)*sizeof(double),cudaMemcpyDeviceToHost);
     for (i = 0; i < N; i++ )
         for (j = 0; j < N; j++) printf("%f \n",*(Ucpu+i*N+j));
 
