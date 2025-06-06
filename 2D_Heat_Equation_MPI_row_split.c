@@ -29,7 +29,6 @@ void DisplayArray(float *array, int rows, int cols) {
 
 /* initial interior temperature */
 float initial(float x, float y) {
-    /* here: start from zero everywhere inside */
     return 0.0;
 }
 
@@ -90,15 +89,16 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &NP);
     MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
 
-    /* allocate flat arrays of size N×N */
     float *u_old = malloc(N * N * sizeof(float));
     float *u_new = malloc(N * N * sizeof(float));
+    FILE *fp = NULL;
 
-    if (Rank == 0) InputData(u_old, delta_s);
+    if (Rank == 0) {
+        InputData(u_old, delta_s);
+        fp = fopen("heat_output.txt", "w");
+    }
 
-    // domain decomposition
-    int Nc;
-    Nc = N / NP;
+    int Nc = N / NP;
     float *u_old_c = malloc(N * Nc * sizeof(float));
     float *u_new_c = malloc(N * Nc * sizeof(float));
 
@@ -111,11 +111,9 @@ int main(int argc, char** argv) {
 
     /* time-stepping loop */
     while (step < max_steps) {
-        // thread-safe step increment
         if (Rank == 0) step++;
         MPI_Bcast(&step, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-        // communicate u_up
         if (Rank == 0){
             for (int i = 0; i < N; i++){
                 u_up[i] = alpha0((i+1) * delta_s);
@@ -126,10 +124,10 @@ int main(int argc, char** argv) {
             MPI_Recv(u_up, N, MPI_FLOAT, Rank - 1, Rank - 1 + 1000, MPI_COMM_WORLD, &Stat);
         }
         else{
-            MPI_Sendrecv(u_old_c + (Nc-1)*N, N, MPI_FLOAT, Rank + 1, Rank + 1000, u_up, N, MPI_FLOAT, Rank - 1, Rank - 1 + 1000, MPI_COMM_WORLD, &Stat);
+            MPI_Sendrecv(u_old_c + (Nc-1)*N, N, MPI_FLOAT, Rank + 1, Rank + 1000,
+                         u_up, N, MPI_FLOAT, Rank - 1, Rank - 1 + 1000, MPI_COMM_WORLD, &Stat);
         }
 
-        // communicate u_down
         if (Rank == NP - 1){
             for (int i = 0; i < N; i++){
                 u_down[i] = alpha1((i+1) * delta_s);
@@ -140,7 +138,8 @@ int main(int argc, char** argv) {
             MPI_Recv(u_down, N, MPI_FLOAT, Rank + 1, Rank + 1 + 100, MPI_COMM_WORLD, &Stat);
         }
         else{
-            MPI_Sendrecv(u_old_c, N, MPI_FLOAT, Rank - 1, Rank + 100, u_down, N, MPI_FLOAT, Rank + 1, Rank + 1 + 100, MPI_COMM_WORLD, &Stat);
+            MPI_Sendrecv(u_old_c, N, MPI_FLOAT, Rank - 1, Rank + 100,
+                         u_down, N, MPI_FLOAT, Rank + 1, Rank + 1 + 100, MPI_COMM_WORLD, &Stat);
         }
 
         LocalDerivative(u_new_c, u_old_c, Nc, u_down, u_up, Rank, delta_s, delta_t);
@@ -150,25 +149,39 @@ int main(int argc, char** argv) {
                 u_old_c[i*N + j] = u_new_c[i*N + j];
             }
         }
+
+        // 🔁 Write temperature grid to file at each time step
+        MPI_Gather(u_old_c, N * Nc, MPI_FLOAT, u_new, N * Nc, MPI_FLOAT, 0, MPI_COMM_WORLD);
+        // if (Rank == 0 && fp != NULL) {
+        //     for (int i = 0; i < N * N; i++) {
+        //         fprintf(fp, "%.6f ", u_new[i]);
+        //     }
+        //     fprintf(fp, "\n");
+        // }
     }
 
-    MPI_Gather(u_new_c, N * Nc, MPI_FLOAT, u_new, N * Nc, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    if (Rank == 0 && fp != NULL) {
+        fclose(fp);
+    }
 
-    /* output final temperature field to stdout */
-    if (Rank == 0){           
-        /* End timing */
+    if (Rank == 0){
         clock_gettime(CLOCK_MONOTONIC, &end_time);
         double elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
-                            (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
-        /* Display configuration and timing */
+                              (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
         printf("Simulation completed.\n");
         printf("Number of interior points (N): %d\n", N);
         printf("Diffusion coefficient (c): %.6f\n", c);
         printf("Total execution time: %.6f seconds\n", elapsed_time);
         printf("Number of iterations: %d\n", max_steps);
-        // DisplayArray(u_new, N, N);
     }
-    MPI_Finalize();
 
+    free(u_old);
+    free(u_new);
+    free(u_old_c);
+    free(u_new_c);
+    free(u_down);
+    free(u_up);
+
+    MPI_Finalize();
     return 0;
 }

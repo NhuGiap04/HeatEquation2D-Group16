@@ -67,10 +67,10 @@ int main() {
         Jacobi(u_new, u_old);
 
         /* Write the current state to the file */
-        for (int i = 0; i < N * N; i++) {
-            fprintf(fp, "%.6f ", u_new[i]);
-        }
-        fprintf(fp, "\n");
+        // for (int i = 0; i < N * N; i++) {
+        //     fprintf(fp, "%.6f ", u_new[i]);
+        // }
+        // fprintf(fp, "\n");
 
         /* Swap pointers for next iteration */
         double *temp = u_old;

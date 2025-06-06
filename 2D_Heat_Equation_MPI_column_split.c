@@ -27,9 +27,7 @@ void DisplayArray(float *array, int rows, int cols) {
     }
 }
 
-/* initial interior temperature */
 float initial(float x, float y) {
-    /* here: start from zero everywhere inside */
     return 0.0;
 }
 
@@ -80,7 +78,6 @@ int main(int argc, char** argv) {
     double delta_s = 1.0 / (N + 1);
     double delta_t = 0.5 * (delta_s * delta_s) / (4.0 * c);
 
-    /* Start timing */
     struct timespec start_time, end_time;
     clock_gettime(CLOCK_MONOTONIC, &start_time);
 
@@ -90,41 +87,27 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &NP);
     MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
 
-    /* allocate flat arrays of size N×N */
     float *u_old = malloc(N * N * sizeof(float));
     float *u_new = malloc(N * N * sizeof(float));
+    FILE *fp = NULL;
 
-    if (Rank == 0) InputData(u_old, delta_s);
+    if (Rank == 0) {
+        InputData(u_old, delta_s);
+        fp = fopen("heat_output.txt", "w");
+    }
 
-    // domain decomposition
-    int Nc;
-    Nc = N / NP;
+    int Nc = N / NP;
     float *u_old_c = malloc(N * Nc * sizeof(float));
     float *u_new_c = malloc(N * Nc * sizeof(float));
 
     MPI_Datatype column_block, column_block_resized;
-    MPI_Type_vector(   /* count = # of blocks (rows)     */ N,
-                    /* blocklength = # of floats per block */ Nc,
-                    /* stride = # of floats between starts */ N,
-                    MPI_FLOAT,
-                    &column_block);
+    MPI_Type_vector(N, Nc, N, MPI_FLOAT, &column_block);
     MPI_Type_commit(&column_block);
 
-    MPI_Type_create_resized(
-        column_block,
-        /* lower bound */ 0,
-        /* new extent  */ Nc * sizeof(float),
-        &column_block_resized
-    );
+    MPI_Type_create_resized(column_block, 0, Nc * sizeof(float), &column_block_resized);
     MPI_Type_commit(&column_block_resized);
 
-    // now each rank gets *one* of these column‐blocks
-    MPI_Scatter(
-        u_old,       /* sendbuf at root */
-        1, column_block_resized,
-        u_old_c,     /* local recvbuf is already contiguous */
-        N*Nc, MPI_FLOAT,
-        0, MPI_COMM_WORLD);
+    MPI_Scatter(u_old, 1, column_block_resized, u_old_c, N*Nc, MPI_FLOAT, 0, MPI_COMM_WORLD);
 
     MPI_Datatype column_type;
     MPI_Type_vector(N, 1, Nc, MPI_FLOAT, &column_type);
@@ -135,13 +118,10 @@ int main(int argc, char** argv) {
 
     int step = 0;
 
-    /* time-stepping loop */
     while (step < max_steps) {
-        // thread-safe step increment
         if (Rank == 0) step++;
         MPI_Bcast(&step, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-        // communicate u_left
         if (Rank == 0){
             for (int i = 0; i < N; i++){
                 u_left[i] = beta0((i+1) * delta_s);
@@ -152,10 +132,10 @@ int main(int argc, char** argv) {
             MPI_Recv(u_left, N, MPI_FLOAT, Rank - 1, Rank - 1 + 1000, MPI_COMM_WORLD, &Stat);
         }
         else{
-            MPI_Sendrecv(u_old_c + Nc - 1, 1, column_type, Rank + 1, Rank + 1000, u_left, N, MPI_FLOAT, Rank - 1, Rank - 1 + 1000, MPI_COMM_WORLD, &Stat);
+            MPI_Sendrecv(u_old_c + Nc - 1, 1, column_type, Rank + 1, Rank + 1000,
+                         u_left, N, MPI_FLOAT, Rank - 1, Rank - 1 + 1000, MPI_COMM_WORLD, &Stat);
         }
 
-        // communicate u_right
         if (Rank == NP - 1){
             for (int i = 0; i < N; i++){
                 u_right[i] = beta1((i+1) * delta_s);
@@ -166,7 +146,8 @@ int main(int argc, char** argv) {
             MPI_Recv(u_right, N, MPI_FLOAT, Rank + 1, Rank + 1 + 100, MPI_COMM_WORLD, &Stat);
         }
         else{
-            MPI_Sendrecv(u_old_c, 1, column_type, Rank - 1, Rank + 100, u_right, N, MPI_FLOAT, Rank + 1, Rank + 1 + 100, MPI_COMM_WORLD, &Stat);
+            MPI_Sendrecv(u_old_c, 1, column_type, Rank - 1, Rank + 100,
+                         u_right, N, MPI_FLOAT, Rank + 1, Rank + 1 + 100, MPI_COMM_WORLD, &Stat);
         }
 
         LocalDerivativeCols(u_new_c, u_old_c, Nc, u_left, u_right, Rank, delta_s, delta_t);
@@ -176,31 +157,43 @@ int main(int argc, char** argv) {
                 u_old_c[i*Nc + j] = u_new_c[i*Nc + j];
             }
         }
-    }
 
-    MPI_Gather(u_new_c, N*Nc, MPI_FLOAT, u_new, 1, column_block_resized, 0, MPI_COMM_WORLD);
+        // Gather and write output
+        MPI_Gather(u_new_c, N*Nc, MPI_FLOAT, u_new, 1, column_block_resized, 0, MPI_COMM_WORLD);
+        // if (Rank == 0 && fp != NULL) {
+        //     for (int i = 0; i < N * N; i++) {
+        //         fprintf(fp, "%.6f ", u_new[i]);
+        //     }
+        //     fprintf(fp, "\n");
+        // }
+    }
 
     MPI_Type_free(&column_block);
     MPI_Type_free(&column_block_resized);
     MPI_Type_free(&column_type);
 
-    /* output final temperature field to stdout */
+    if (Rank == 0 && fp != NULL) {
+        fclose(fp);
+    }
+
     if (Rank == 0){
-        /* End timing */
         clock_gettime(CLOCK_MONOTONIC, &end_time);
         double elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
-                            (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
-        /* Display configuration and timing */
+                              (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
         printf("Simulation completed.\n");
         printf("Number of interior points (N): %d\n", N);
         printf("Diffusion coefficient (c): %.6f\n", c);
         printf("Total execution time: %.6f seconds\n", elapsed_time);
         printf("Number of iterations: %d\n", max_steps);
-        // DisplayArray(u_new, N, N);
     }
+
+    free(u_old);
+    free(u_new);
+    free(u_old_c);
+    free(u_new_c);
+    free(u_left);
+    free(u_right);
+
     MPI_Finalize();
-
-
-
     return 0;
 }

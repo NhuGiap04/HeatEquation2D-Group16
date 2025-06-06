@@ -15,8 +15,8 @@ int N = 100;       /* number of interior points per dimension */
 /* boundary temperatures */
 float alpha0(float y) { return 10.0; }  /* u(t,0,y) */
 float alpha1(float y) { return 40.0; }  /* u(t,1,y) */
-float beta0(float x) { return 30.0; }  /* u(t,x,0) */
-float beta1(float x) { return 50.0; }  /* u(t,x,1) */
+float beta0(float x)  { return 30.0; }  /* u(t,x,0) */
+float beta1(float x)  { return 50.0; }  /* u(t,x,1) */
 
 void DisplayArray(float* array, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
@@ -29,7 +29,6 @@ void DisplayArray(float* array, int rows, int cols) {
 
 /* initial interior temperature */
 float initial(float x, float y) {
-    /* here: start from zero everywhere inside */
     return 0.0;
 }
 
@@ -63,22 +62,21 @@ int main(int argc, char** argv) {
 
     while ((opt = getopt_long(argc, argv, "n:c:", long_options, NULL)) != -1) {
         switch (opt) {
-        case 'n':
-            N = atoi(optarg);
-            break;
-        case 'c':
-            c = atof(optarg);
-            break;
-        default:
-            fprintf(stderr, "Usage: %s [--number-interior-points N] [--diffusion-coefficient c]\n", argv[0]);
-            exit(EXIT_FAILURE);
+            case 'n':
+                N = atoi(optarg);
+                break;
+            case 'c':
+                c = atof(optarg);
+                break;
+            default:
+                fprintf(stderr, "Usage: %s [--number-interior-points N] [--diffusion-coefficient c]\n", argv[0]);
+                exit(EXIT_FAILURE);
         }
     }
 
     double delta_s = 1.0 / (N + 1);
     double delta_t = 0.5 * (delta_s * delta_s) / (4.0 * c);
 
-    /* Start timing */
     struct timespec start_time, end_time;
     clock_gettime(CLOCK_MONOTONIC, &start_time);
 
@@ -88,15 +86,16 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &NP);
     MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
 
-    /* allocate flat arrays of size N�N */
     float* u_old = malloc(N * N * sizeof(float));
     float* u_new = malloc(N * N * sizeof(float));
+    FILE* fp = NULL;
 
-    if (Rank == 0) InputData(u_old, delta_s);
+    if (Rank == 0) {
+        InputData(u_old, delta_s);
+        fp = fopen("heat_output.txt", "w");
+    }
 
-    // domain decomposition
-    int Nc;
-    Nc = N / NP;
+    int Nc = N / NP;
     float* u_old_c = malloc(N * Nc * sizeof(float));
     float* u_new_c = malloc(N * Nc * sizeof(float));
 
@@ -107,38 +106,32 @@ int main(int argc, char** argv) {
 
     int step = 0;
 
-    /* time-stepping loop */
     while (step < max_steps) {
-        // thread-safe step increment
         if (Rank == 0) step++;
         MPI_Bcast(&step, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-        // communicate u_up
         if (Rank == 0) {
             for (int i = 0; i < N; i++) {
                 u_up[i] = alpha0((i + 1) * delta_s);
             }
             MPI_Send(u_old_c + (Nc - 1) * N, N, MPI_FLOAT, Rank + 1, Rank + 1000, MPI_COMM_WORLD);
-        }
-        else if (Rank == NP - 1) {
+        } else if (Rank == NP - 1) {
             MPI_Recv(u_up, N, MPI_FLOAT, Rank - 1, Rank - 1 + 1000, MPI_COMM_WORLD, &Stat);
-        }
-        else {
-            MPI_Sendrecv(u_old_c + (Nc - 1) * N, N, MPI_FLOAT, Rank + 1, Rank + 1000, u_up, N, MPI_FLOAT, Rank - 1, Rank - 1 + 1000, MPI_COMM_WORLD, &Stat);
+        } else {
+            MPI_Sendrecv(u_old_c + (Nc - 1) * N, N, MPI_FLOAT, Rank + 1, Rank + 1000,
+                         u_up, N, MPI_FLOAT, Rank - 1, Rank - 1 + 1000, MPI_COMM_WORLD, &Stat);
         }
 
-        // communicate u_down
         if (Rank == NP - 1) {
             for (int i = 0; i < N; i++) {
                 u_down[i] = alpha1((i + 1) * delta_s);
             }
             MPI_Send(u_old_c, N, MPI_FLOAT, Rank - 1, Rank + 100, MPI_COMM_WORLD);
-        }
-        else if (Rank == 0) {
+        } else if (Rank == 0) {
             MPI_Recv(u_down, N, MPI_FLOAT, Rank + 1, Rank + 1 + 100, MPI_COMM_WORLD, &Stat);
-        }
-        else {
-            MPI_Sendrecv(u_old_c, N, MPI_FLOAT, Rank - 1, Rank + 100, u_down, N, MPI_FLOAT, Rank + 1, Rank + 1 + 100, MPI_COMM_WORLD, &Stat);
+        } else {
+            MPI_Sendrecv(u_old_c, N, MPI_FLOAT, Rank - 1, Rank + 100,
+                         u_down, N, MPI_FLOAT, Rank + 1, Rank + 1 + 100, MPI_COMM_WORLD, &Stat);
         }
 
         LocalJacobi(u_new_c, u_old_c, Nc, u_down, u_up, Rank, delta_s, delta_t);
@@ -148,17 +141,24 @@ int main(int argc, char** argv) {
                 u_old_c[i * N + j] = u_new_c[i * N + j];
             }
         }
+
+        MPI_Gather(u_old_c, N * Nc, MPI_FLOAT, u_new, N * Nc, MPI_FLOAT, 0, MPI_COMM_WORLD);
+        // if (Rank == 0 && fp != NULL) {
+        //     for (int i = 0; i < N * N; i++) {
+        //         fprintf(fp, "%.6f ", u_new[i]);
+        //     }
+        //     fprintf(fp, "\n");
+        // }
     }
 
-    MPI_Gather(u_new_c, N * Nc, MPI_FLOAT, u_new, N * Nc, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    if (Rank == 0 && fp != NULL) {
+        fclose(fp);
+    }
 
-    /* output final temperature field to stdout */
     if (Rank == 0) {
-        /* End timing */
         clock_gettime(CLOCK_MONOTONIC, &end_time);
         double elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
-            (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
-        /* Display configuration and timing */
+                              (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
         printf("Simulation completed.\n");
         printf("Number of interior points (N): %d\n", N);
         printf("Diffusion coefficient (c): %.6f\n", c);
@@ -166,7 +166,14 @@ int main(int argc, char** argv) {
         printf("Number of iterations: %d\n", max_steps);
         // DisplayArray(u_new, N, N);
     }
-    MPI_Finalize();
 
+    free(u_old);
+    free(u_new);
+    free(u_old_c);
+    free(u_new_c);
+    free(u_down);
+    free(u_up);
+
+    MPI_Finalize();
     return 0;
 }
