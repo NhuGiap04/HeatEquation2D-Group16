@@ -154,12 +154,12 @@ int main(int argc, char** argv) {
 
         MPI_Gather(u_new_c, N * Nc, MPI_FLOAT, u_new, 1, column_block_resized, 0, MPI_COMM_WORLD);
 
-        // if (Rank == 0 && fp != NULL) {
-        //     for (int i = 0; i < N * N; i++) {
-        //         fprintf(fp, "%.6f ", u_new[i]);
-        //     }
-        //     fprintf(fp, "\n");
-        // }
+        if (Rank == 0 && fp != NULL) {
+            for (int i = 0; i < N * N; i++) {
+                fprintf(fp, "%.6f ", u_new[i]);
+            }
+            fprintf(fp, "\n");
+        }
     }
 
     MPI_Type_free(&column_block);

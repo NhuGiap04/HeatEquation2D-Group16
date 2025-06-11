@@ -111,11 +111,10 @@ int main(int argc, char **argv) {
     for (int step = 0; step < max_steps; step++) {
         Derivative(u_new, u_old, delta_s, delta_t);
 
-        /* Write the current state to the file */
-        // for (int i = 0; i < N * N; i++) {
-        //     fprintf(fp, "%.6f ", u_new[i]);
-        // }
-        // fprintf(fp, "\n");
+        for (int i = 0; i < N * N; i++) {
+            fprintf(fp, "%.6f ", u_new[i]);
+        }
+        fprintf(fp, "\n");
 
         /* Swap pointers for next iteration */
         double *temp = u_old;

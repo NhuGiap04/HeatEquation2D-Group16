@@ -152,12 +152,12 @@ int main(int argc, char** argv) {
 
         // 🔁 Write temperature grid to file at each time step
         MPI_Gather(u_old_c, N * Nc, MPI_FLOAT, u_new, N * Nc, MPI_FLOAT, 0, MPI_COMM_WORLD);
-        // if (Rank == 0 && fp != NULL) {
-        //     for (int i = 0; i < N * N; i++) {
-        //         fprintf(fp, "%.6f ", u_new[i]);
-        //     }
-        //     fprintf(fp, "\n");
-        // }
+        if (Rank == 0 && fp != NULL) {
+            for (int i = 0; i < N * N; i++) {
+                fprintf(fp, "%.6f ", u_new[i]);
+            }
+            fprintf(fp, "\n");
+        }
     }
 
     if (Rank == 0 && fp != NULL) {

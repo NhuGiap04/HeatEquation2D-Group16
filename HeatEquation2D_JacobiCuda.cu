@@ -64,10 +64,10 @@ int main() {
 
         // Copy and write to file
         cudaMemcpy(u_old_h, u_old_d, N * N * sizeof(float), cudaMemcpyDeviceToHost);
-        // for (int i = 0; i < N * N; i++) {
-        //     fprintf(fp, "%.6f ", u_old_h[i]);
-        // }
-        // fprintf(fp, "\n");
+        for (int i = 0; i < N * N; i++) {
+            fprintf(fp, "%.6f ", u_old_h[i]);
+        }
+        fprintf(fp, "\n");
     }
 
     fclose(fp);
